@@ -1,0 +1,140 @@
+# model-gateway policy / routing config (§14 三分离: 策略)
+# copy to gateway.yaml and fill in real endpoints/models.
+# NOTE: endpoints below are PLACEHOLDERS — fill from your real provider
+# consoles. Capabilities listed here are defaults; the authoritative source
+# is the Gate B2 conformance matrix (capability_matrix_path).
+
+server:
+  bind: 127.0.0.1
+  port: 8700
+  database_path: gateway.db
+  # auth:                      # REQUIRED for non-loopback deployment (§24.22)
+  #   token: ${GATEWAY_AUTH_TOKEN}
+  # allow_ips: []              # network ACL (loopback-only when empty)
+
+# Gate B2 output — authoritative capability declarations (§24.21)
+capability_matrix_path: docs/PROVIDER_CAPABILITY_CONFORMANCE_MATRIX.yaml
+
+log_dir: logs
+
+routes:
+  gateway-fast:
+    description: "成本优先、速度优先，免费资源优先但服务连续性优先于成本"
+    providers:
+      - provider: amd
+        model: DeepSeek-V4-Flash
+      - provider: modelscope
+        model: deepseek-ai/DeepSeek-V4-Flash-0731
+      - provider: opencode
+        model: deepseek-v4-flash
+      - provider: deepseek
+        model: deepseek-v4-flash
+      - provider: codex
+        model: codex-gpt
+
+  gateway-deep:
+    description: "更强推理"
+    providers:
+      - provider: opencode
+        model: deepseek-v4-pro
+
+providers:
+  amd:
+    type: openai_compatible
+    base_url: https://developer.amd.com.cn/radeon/api/v1
+    models:
+      - id: DeepSeek-V4-Flash
+        default: true
+        capabilities: [text, stream, usage, multi_turn]
+    keys:
+      - id: amd-01
+        env: AMD_API_KEY
+        priority: 100
+
+  modelscope:
+    type: openai_compatible
+    base_url: https://api-inference.modelscope.cn/v1
+    models:
+      - id: deepseek-ai/DeepSeek-V4-Flash-0731
+        default: true
+        capabilities: [text, stream, usage, multi_turn]
+    keys:
+      - id: ms-01
+        env: MODELSCOPE_API_KEY
+        priority: 100
+
+  opencode:
+    type: openai_compatible
+    base_url: https://opencode.ai/zen/go/v1
+    models:
+      - id: deepseek-v4-flash
+        default: true
+        capabilities: [text, stream, usage, multi_turn]
+      - id: deepseek-v4-pro
+        capabilities: [text, stream, tools, structured_output, usage, multi_turn]
+    keys:
+      - id: ocg-01
+        env: OPENCODE_KEY_1
+        priority: 100
+      - id: ocg-02
+        env: OPENCODE_KEY_2
+        priority: 50
+        reserve: true          # 主 key 耗尽/限流/认证失败时自动接管 (§10)
+    reset_policy:
+      type: unknown             # known_schedule / observed / unknown (§11)
+
+  gemini:
+    # Phase 2 (gateway-vision); not routed in Phase 1
+    type: gemini
+    enabled: false
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    # Gemini 按 (key × model) 独立限额 → 对选定模型在 healthy keys 间轮值（§11）
+    key_pool_strategy: round_robin
+    models:
+      - id: gemini-2.0-flash
+        default: true
+        capabilities: [text, stream, usage]
+    keys:
+      - id: gemini-01
+        env: GOOGLE_API_KEY_1
+        priority: 100
+      - id: gemini-02
+        env: GOOGLE_API_KEY_2
+        priority: 90
+      - id: gemini-03
+        env: GOOGLE_API_KEY_3
+        priority: 80
+      - id: gemini-04
+        env: GOOGLE_API_KEY_4
+        priority: 70
+      - id: gemini-05
+        env: GOOGLE_API_KEY_5
+        priority: 60
+        reserve: true
+
+  deepseek:
+    # 官方 DeepSeek API（付费兜底档）
+    type: openai_compatible
+    base_url: https://api.deepseek.com/v1
+    models:
+      - id: deepseek-v4-flash
+        default: true
+        capabilities: [text, stream, tools, structured_output, usage, multi_turn]
+      - id: deepseek-v4-pro
+        capabilities: [text, stream, tools, structured_output, usage, multi_turn]
+    keys:
+      - id: ds-01
+        env: DEEPSEEK_API_KEY
+        priority: 100
+
+  codex:
+    # Codex CLI 兜底（Phase 2 Gate F）：ChatGPT 订阅额度，POC 已验证
+    type: executor
+    enabled: true
+    models:
+      - id: codex-gpt
+        default: true
+        capabilities: [text, structured_output, multi_turn, usage]
+
+codex:
+  enabled: true

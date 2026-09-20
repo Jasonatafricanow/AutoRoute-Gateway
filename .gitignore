@@ -1,0 +1,41 @@
+# secrets
+.env
+*.env
+!examples/.env.example
+
+# runtime state
+gateway.db
+gateway.db-journal
+gateway.db-wal
+gateway.db-shm
+
+# capture output (schema-only, but short-term retention by design)
+capture/
+logs/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.tmp/
+.pytest_cache/
+*.egg-info/
+
+pytest-cache-files-*/
+.pytest_cache/
+
+
+# Runtime logs & temp
+gateway.log
+target
+
+
+# AI Agent / Dev Harness tools
+.claude/
+.hermes/
+.reasonix/
+.agents/
+.codex/
+.openclaw/
+.superpowers/
+.mimosa/

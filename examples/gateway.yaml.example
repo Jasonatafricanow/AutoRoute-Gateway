@@ -1,0 +1,101 @@
+# model-gateway policy / routing config (§14 三分离: 策略)
+# copy to gateway.yaml and fill in real endpoints/models.
+# NOTE: endpoints below are PLACEHOLDERS — fill from your real provider
+# consoles. Capabilities listed here are defaults; the authoritative source
+# is the Gate B2 conformance matrix (capability_matrix_path).
+
+server:
+  bind: 127.0.0.1
+  port: 8700
+  database_path: gateway.db
+  # auth:                      # REQUIRED for non-loopback deployment (§24.22)
+  #   token: ${GATEWAY_AUTH_TOKEN}
+  # allow_ips: []              # network ACL (loopback-only when empty)
+
+# Gate B2 output — authoritative capability declarations (§24.21)
+capability_matrix_path: docs/PROVIDER_CAPABILITY_CONFORMANCE_MATRIX.yaml
+
+log_dir: logs
+
+routes:
+  gateway-fast:
+    description: "成本优先、速度优先，免费资源优先但服务连续性优先于成本"
+    providers:
+      - provider: amd
+        model: DS-Flash
+      - provider: modelscope
+        model: DS-Flash
+      - provider: opencode
+        model: DS-Flash
+
+  gateway-deep:
+    description: "更强推理"
+    providers:
+      - provider: opencode
+        model: Pro
+
+providers:
+  amd:
+    type: openai_compatible
+    base_url: https://YOUR-AMD-ENDPOINT/v1
+    models:
+      - id: DS-Flash
+        default: true
+        capabilities: [text, stream, usage, multi_turn]
+    keys:
+      - id: amd-01
+        env: AMD_API_KEY
+        priority: 100
+
+  modelscope:
+    type: openai_compatible
+    base_url: https://YOUR-MODELSCOPE-ENDPOINT/v1
+    models:
+      - id: DS-Flash
+        default: true
+        capabilities: [text, stream, usage, multi_turn]
+    keys:
+      - id: ms-01
+        env: MODELSCOPE_API_KEY
+        priority: 100
+
+  opencode:
+    type: openai_compatible
+    base_url: https://YOUR-OPENCODE-ENDPOINT/v1
+    models:
+      - id: DS-Flash
+        default: true
+        capabilities: [text, stream, usage, multi_turn]
+      - id: Pro
+        capabilities: [text, stream, tools, structured_output, usage, multi_turn]
+    keys:
+      - id: ocg-01
+        env: OPENCODE_KEY_1
+        priority: 100
+      - id: ocg-02
+        env: OPENCODE_KEY_2
+        priority: 50
+        reserve: true          # 主 key 耗尽/限流/认证失败时自动接管 (§10)
+    reset_policy:
+      type: unknown             # known_schedule / observed / unknown (§11)
+
+  gemini:
+    # Phase 2 (gateway-vision); not routed in Phase 1
+    type: gemini
+    enabled: false
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    models:
+      - id: gemini-2.0-flash
+        default: true
+        capabilities: [text, stream, usage]
+    keys:
+      - id: gemini-01
+        env: GEMINI_API_KEY
+
+  codex:
+    # experimental executor, default disabled, NOT on the main route graph (§18)
+    type: executor
+    enabled: false
+
+codex:
+  enabled: false

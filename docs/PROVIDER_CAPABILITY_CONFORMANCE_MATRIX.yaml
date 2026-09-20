@@ -1,0 +1,10 @@
+# Provider Capability Conformance Matrix（Gate B2 实测）
+# 来源：tools/smoke_test.py 真实请求实测（2026-08-16，全部真实 key）
+# 格式：provider/model: [verified capabilities]——权威能力声明（Gate C 生效）
+# 未列出的能力视为不支持；429 限流不代表不支持，是免费档额度限制
+
+amd/DeepSeek-V4-Flash: [text, stream, tools, structured_output, usage, multi_turn]
+modelscope/deepseek-ai/DeepSeek-V4-Flash-0731: [text, stream, tools, structured_output, vision_input]
+opencode/deepseek-v4-flash: [text, stream, tools, multi_turn, usage]
+opencode/deepseek-v4-pro: [text, stream, tools, multi_turn]
+deepseek/deepseek-v4-flash: [text, stream, tools, multi_turn, usage]
