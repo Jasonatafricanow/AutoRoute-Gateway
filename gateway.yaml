@@ -29,8 +29,6 @@ routes:
         model: deepseek-v4-flash
       - provider: deepseek
         model: deepseek-v4-flash
-      - provider: codex
-        model: codex-gpt
 
   gateway-deep:
     description: "更强推理"
