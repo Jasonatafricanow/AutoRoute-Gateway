@@ -128,13 +128,14 @@ providers:
         priority: 100
 
   codex:
-    # Codex CLI 兜底（Phase 2 Gate F）：ChatGPT 订阅额度，POC 已验证
+    # Host CLI executor. Disabled by default because it crosses the gateway
+    # process boundary into a local tool-capable runtime.
     type: executor
-    enabled: true
+    enabled: false
     models:
       - id: codex-gpt
         default: true
         capabilities: [text, structured_output, multi_turn, usage]
 
 codex:
-  enabled: true
+  enabled: false
