@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from gateway.config.loader import load_gateway_config
@@ -13,6 +15,14 @@ from gateway.service import GatewayService
 @pytest.mark.asyncio
 async def test_chat_uses_executor_for_cli_candidate(monkeypatch, tmp_path):
     cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg = replace(
+        cfg,
+        codex_enabled=True,
+        providers={
+            **cfg.providers,
+            "codex": replace(cfg.providers["codex"], enabled=True),
+        },
+    )
     # codex-only route → forces the cli candidate path
     cfg.routes["gateway-fast"] = _route("gateway-fast", {"providers": [{"provider": "codex", "model": "codex-gpt"}]})
 
@@ -43,6 +53,14 @@ async def test_chat_uses_executor_for_cli_candidate(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_chat_executor_failure_becomes_adapter_error(monkeypatch):
     cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg = replace(
+        cfg,
+        codex_enabled=True,
+        providers={
+            **cfg.providers,
+            "codex": replace(cfg.providers["codex"], enabled=True),
+        },
+    )
     cfg.routes["gateway-fast"] = _route("gateway-fast", {"providers": [{"provider": "codex", "model": "codex-gpt"}]})
     svc = GatewayService(cfg, resolver, store=InMemoryStateStore())
 
