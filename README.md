@@ -1,107 +1,162 @@
-# AutoRoute-Gateway (v0.3.1)
+# AutoRoute Gateway
 
-> 面向多厂商、多凭证的 Capability-Aware LLM 智能自路由网关。
-> 实现依据：`模型网关-v0.3.1-正式基线-最终版.md`（FROZEN 架构基准）。
+**A capability-aware, multi-provider, multi-credential LLM gateway.**
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-teal.svg)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+AutoRoute Gateway exposes an OpenAI-compatible surface while treating model routing as a stateful decision problem rather than a static reverse proxy.
 
----
+Its central design question is:
 
-## 🌟 核心特性
+> When several providers, models, and credentials are available, what may safely fail over — and what must become irreversible once output has reached the client?
 
-**AutoRoute-Gateway** 专为多模型环境下的高可用、低故障调用设计。传统 API 网关仅做简单反向代理，而 AutoRoute-Gateway 具备**深度自路由与流量治理能力**：
+## Portfolio role
 
-1. 🧭 **智能自路由（Auto-Routing & Scoring）**：
-   * **Capability Gate**：按请求要素（流式、工具调用、多模态视觉、上下文长度）自动过滤不匹配的 Provider。
-   * **三态打分器（Scorer）**：基于健康状态、历史延迟、免费/付费策略及配额余量动态排序，自适应调度到当前最优节点。
-2. 🔑 **多凭证与独立配额（Multi-Credential Isolation）**：
-   * 严格贯彻 **Provider ≠ Credential**：单个 Key 额度耗尽（Quota Exhausted）或触发限流（429）绝不影响同 Provider 下的其他候选 Key。
-   * 支持静态主备与平滑轮询（Round-Robin）Key 池。
-3. 🛡️ **流式安全提交（Streaming Commit Guard）**：
-   * 当下游客户端已经收到首个 chunk 后，上游若发生中断，立即终止当前流并抛出 `PARTIAL_STREAM_FAILURE`，**坚决禁止跨 Provider 重放**，杜绝客户端收到错乱混合回答。
-4. 🩺 **七类精细化错误分类与自动降级（Fallback Engine）**：
-   * 严格区分 429 短期限流与长期额度耗尽；遇到认证错误（Auth）仅临时屏蔽当前 Key 并立即切换 `next_candidate`。
-5. 📊 **无感兼容**：
-   * 对外暴露标准 OpenAI 兼容接口（`/v1/chat/completions`、`/v1/models`）。
+This project belongs to the infrastructure layer of the portfolio.
 
----
-
-## 🏗️ 架构与请求流
-
-```
-客户端请求 (Web / Agent / 外部系统)
-    ↓ OpenAI-compatible POST /v1/chat/completions
-[ Virtual Model Resolver ] —— 解析虚拟模型（如 gateway-fast, gateway-deep）
-    ↓
-[ Capability Gate ] —— 按需求（Tools / Vision / Stream）过滤候选者
-    ↓
-[ Candidate Builder & Scorer ] —— 动态打分与自路由排序
-    ↓
-[ Router ] —— 生成候选执行队列 (Candidate Queue)
-    ↓
-[ Executor & Fallback Engine ] —— 执行调用，捕获七类异常，自动流转降级
-    ↓ (首包发送后锁定，保护流式一致性)
-响应返回下游
+```text
+Agent / Application
+        |
+        v
+ AutoRoute Gateway
+   |     |     |
+   v     v     v
+Provider / Credential / Model candidates
 ```
 
----
+It complements [LocalModelService](https://github.com/Jasonatafricanow/LocalModelService): LocalModelService standardizes a local inference surface; AutoRoute handles selection and failure across heterogeneous upstreams.
 
-## 📂 目录结构
+## The problem
 
-| 路径 | 内容与作用 |
-| :--- | :--- |
-| `gateway/` | 核心实现（domain / policy / routing / providers / executors / state / config / api / capture） |
-| `tools/` | `run_gateway.py`（启动入口）、`smoke_test.py`（冒烟测试）、`capture_proxy.py`（抓包代理） |
-| `tests/` | 82 个单元与集成测试（覆盖 Case 1~10 验收基准） |
-| `docs/` | 契约与规范文件（`SPEC.md`、`REAL_TRANSPORT_CONTRACT.md`、`PROVIDER_CAPABILITY_CONFORMANCE_MATRIX.yaml`） |
-| `examples/` | 配置示例模板（`gateway.yaml.example` 与 `.env.example`） |
+A basic gateway can map one model name to one upstream URL. That model breaks down when real deployments contain:
 
----
+- several providers with overlapping capabilities;
+- several credentials under one provider;
+- quota and rate-limit failures that apply to one key but not another;
+- models that differ in tool, vision, streaming, or context support;
+- partial streamed responses that cannot be replayed safely.
 
-## 🚀 快速开始
+The routing unit therefore cannot simply be "provider".
 
-### 1. 配置准备
+## How the design evolved
 
-```powershell
-# 复制配置文件模板
-Copy-Item examples\gateway.yaml.example gateway.yaml
-Copy-Item examples\.env.example .env
+### 1. Provider routing was too coarse
 
-# 编辑 gateway.yaml 配置路由规则；编辑 .env 填写对应 Provider 的 API Key
+A provider can remain healthy while one credential is exhausted or invalid. Treating provider and credential as the same object turns a local key failure into a global provider failure.
+
+The architecture separates them as first-class entities.
+
+### 2. Model names were not enough
+
+A request is not only asking for a name. It may require tools, vision, streaming, or a minimum context window.
+
+Routing therefore starts with a capability gate before scoring candidates.
+
+### 3. Streaming changed fallback semantics
+
+Before the first downstream chunk is committed, retrying another candidate can be safe. After output has been exposed to the client, switching providers risks producing one response assembled from two unrelated generations.
+
+This creates a commit boundary:
+
+```text
+before first committed chunk -> fallback may continue
+after first committed chunk  -> no cross-provider replay
 ```
 
-### 2. 运行服务
+A partial stream failure is surfaced explicitly instead of being hidden behind unsafe retry.
 
-```powershell
-# 使用 Python 3.11+ 运行
-python -m tools.run_gateway --config gateway.yaml --env .env
-# 默认监听 http://127.0.0.1:8700
+## Key design decisions
+
+### Provider != Credential
+
+Health, quota, and credential state are tracked independently. A bad key does not automatically poison every route through that provider.
+
+### Capability before preference
+
+Candidates that cannot satisfy the request are removed before scoring. Preference cannot override incompatibility.
+
+### Routing state is scoped
+
+Health, quota, and credential state are attached to explicit subjects rather than stored as one undifferentiated global flag.
+
+### Fallback is error-aware
+
+Rate limits, quota exhaustion, authentication errors, transport failures, and partial-stream failures have different recovery semantics.
+
+### The client contract is stable
+
+The gateway exposes OpenAI-compatible chat-completion and model-list endpoints so applications are not tightly coupled to the internal routing policy.
+
+## Request path
+
+```text
+OpenAI-compatible request
+        |
+        v
+Virtual Model Resolver
+        |
+        v
+Capability Gate
+        |
+        v
+Candidate Builder / Scorer
+        |
+        v
+Ordered Candidate Queue
+        |
+        v
+Executor + Error Classifier
+        |
+        +---- safe pre-commit fallback
+        |
+        +---- streaming commit guard
+        |
+        v
+Client response
 ```
 
-### 3. 核心接口
+## Current scope
 
-* **状态与监控**：
-  * `GET /health`：网关健康状态检查
-  * `GET /ready`：就绪探针
-  * `GET /providers`：已注册 Provider 状态与可用 Key 数量
-  * `GET /routes`：当前激活的路由矩阵与虚拟模型映射
-* **模型服务面**：
-  * `POST /v1/chat/completions`：标准聊天对话与流式接口
-  * `GET /v1/models`：可用虚拟模型列表
+The repository includes:
 
----
+- virtual-model resolution;
+- capability-aware candidate filtering;
+- multi-provider / multi-credential routing;
+- candidate scoring;
+- quota, health, and credential state;
+- fallback by classified failure type;
+- streaming commit protection;
+- OpenAI-compatible `/v1/chat/completions` and `/v1/models`;
+- health, readiness, provider, and route inspection endpoints.
 
-## 🧪 测试与验收
+## Verification
 
-```powershell
-# 运行全部单测与验收用例
+The project uses pytest / pytest-asyncio and keeps routing policy separate from transport execution so the decision layer can be tested without a live provider.
+
+```bash
+pip install -e ".[dev]"
 pytest -q
 ```
 
----
+## Boundaries and non-claims
 
-## 📄 许可证
+AutoRoute Gateway is not presented as:
 
-本项目采用 [MIT License](LICENSE) 授权。
+- an internet-scale global load balancer;
+- a billing or metering platform;
+- a provider-quality oracle;
+- proof that one scoring policy is optimal for every workload.
+
+The architecture focuses on routing correctness and failure boundaries. Real latency, provider reliability, cost policy, and deployment topology remain environment-specific.
+
+## Stack
+
+Python 3.11+ · FastAPI · httpx · Pydantic · PyYAML · pytest
+
+## Repository history
+
+This public repository is a cleaned publication of an earlier local project line. The public Git history begins at the publication baseline and should not be interpreted as the complete development timeline.
+
+## Engineering philosophy
+
+Fallback is useful only while the system can still preserve one coherent response.
+
+The gateway therefore treats **capability, state scope, credential identity, and commit boundaries** as more important than aggressive retry.
