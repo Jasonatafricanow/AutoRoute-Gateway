@@ -52,3 +52,29 @@ def test_credential_state_update(store):
 
 def test_health_default_unknown(store):
     assert store.get_health(StateSubject(provider_id="amd")) == HealthState.UNKNOWN
+
+def test_provider_level_health_upsert_has_single_row(store):
+    provider = StateSubject(provider_id="amd")
+    store.set_health(provider, HealthState.DEGRADED, reason="first")
+    store.set_health(provider, HealthState.HEALTHY, reason="second")
+
+    snap = store.snapshot()
+    rows = [r for r in snap["health"] if r["provider_id"] == "amd" and r["model"] is None]
+    assert len(rows) == 1
+    assert rows[0]["state"] == "HEALTHY"
+
+
+def test_provider_level_quota_upsert_has_single_row(store):
+    provider = StateSubject(provider_id="amd")
+    store.set_quota(provider, QuotaState.RATE_LIMITED, reason="first")
+    store.set_quota(provider, QuotaState.EXHAUSTED, reason="second")
+
+    snap = store.snapshot()
+    rows = [
+        r for r in snap["quota"]
+        if r["provider_id"] == "amd"
+        and r["credential_id"] is None
+        and r["model"] is None
+    ]
+    assert len(rows) == 1
+    assert rows[0]["state"] == "EXHAUSTED"
