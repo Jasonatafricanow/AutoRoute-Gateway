@@ -103,19 +103,32 @@ def _sanitize(text: str, limit: int = 300) -> str:
 
 
 class StreamHandle:
-    """A selected stream candidate: buffers the first event so the engine can
-    decide pre-commit fallback before anything reaches the client."""
+    """Selected upstream stream with a buffered, validated prefix.
 
-    def __init__(self, candidate: RouteCandidate, events: AsyncIterator[dict], first: dict | None):
+    Prefix events are not exposed until the service has observed either a
+    substantive chunk or a clean [DONE]. This preserves cross-provider
+    fallback when an upstream emits metadata/role events and then fails before
+    producing client-visible content.
+    """
+
+    def __init__(
+        self,
+        candidate: RouteCandidate,
+        events: AsyncIterator[dict],
+        buffered: list[dict],
+    ):
         self.candidate = candidate
         self._events = events
-        self._first = first
+        self._buffered = list(buffered)
         self.committed = False
 
     async def __aiter__(self) -> AsyncIterator[dict]:
-        if self._first is not None:
-            yield self._first
-            self._first = None
+        for event in self._buffered:
+            if _is_valid_chunk(event):
+                self.committed = True
+            yield event
+        self._buffered.clear()
+
         async for event in self._events:
             if not self.committed and _is_valid_chunk(event):
                 self.committed = True
@@ -217,87 +230,149 @@ class GatewayService:
         return holder["body"]
 
     # --- main entry: stream ---
-    async def chat_stream(self, virtual_model: str, payload: dict) -> AsyncIterator[dict]:
+    async def chat_stream(
+        self,
+        virtual_model: str,
+        payload: dict,
+    ) -> AsyncIterator[dict]:
         request_id = str(uuid.uuid4())
         required = _capabilities_from_payload(payload)
         candidates = build_candidates(virtual_model, self.config)
         candidates = capability_gate(candidates, required)
         if not candidates:
             raise RequestValidationError(
-                f"no candidate satisfies required capabilities {sorted(c.value for c in required)} for {virtual_model!r}"
+                f"no candidate satisfies required capabilities "
+                f"{sorted(c.value for c in required)} for {virtual_model!r}"
             )
+
         scored = score_candidates(candidates, self.store)
         selected: StreamHandle | None = None
         attempts = 0
+
         for sc in scored:
             candidate = sc.candidate
             if not sc.usable or not self.fallback._eligible(candidate):  # noqa: SLF001
                 continue
-            while True:
-                if attempts >= self.fallback._policy.hard_attempt_ceiling:  # noqa: SLF001
-                    raise NoEligibleCandidateError(virtual_model, attempts)
-                attempts += 1
-                adapter = self.adapter_for(candidate)
-                secret = self._secret(candidate)
-                try:
-                    events = adapter.chat_completions_stream(payload, secret, candidate.concrete_model.model_id)
-                    first = await events.__anext__()
-                except StopAsyncIteration:
-                    # empty stream = never committed; move to the next candidate
-                    self.store.record_route_event(
-                        {"request_id": request_id, "virtual_model": virtual_model, "attempt": attempts,
-                         "provider_id": candidate.provider_id, "credential_id": candidate.credential_id,
-                         "model": candidate.concrete_model.model_id, "error_class": "server", "action": "next_candidate"}
-                    )
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    failure = self._candidate_failure(exc)
-                    self.fallback._apply_failure(candidate, failure)  # noqa: SLF001
-                    self.store.record_route_event(
-                        {"request_id": request_id, "virtual_model": virtual_model, "attempt": attempts,
-                         "provider_id": candidate.provider_id, "credential_id": candidate.credential_id,
-                         "model": candidate.concrete_model.model_id, "error_class": failure.error_class.value, "action": "next_candidate"}
-                    )
-                    break
-                selected = StreamHandle(candidate, events, first)
-                if _is_valid_chunk(first or {}):
-                    selected.committed = True
-                break
+
+            if attempts >= self.fallback._policy.hard_attempt_ceiling:  # noqa: SLF001
+                raise NoEligibleCandidateError(virtual_model, attempts)
+            attempts += 1
+
+            adapter = self.adapter_for(candidate)
+            secret = self._secret(candidate)
+            buffered: list[dict] = []
+
+            try:
+                events = adapter.chat_completions_stream(
+                    payload,
+                    secret,
+                    candidate.concrete_model.model_id,
+                )
+
+                while True:
+                    event = await events.__anext__()
+                    buffered.append(event)
+
+                    # A clean terminal event is a successful (possibly empty)
+                    # stream. Otherwise wait for substantive output before
+                    # selecting this provider.
+                    if event.get("data") == "[DONE]" or _is_valid_chunk(event):
+                        selected = StreamHandle(candidate, events, buffered)
+                        break
+
+            except StopAsyncIteration:
+                self.store.record_route_event(
+                    {
+                        "request_id": request_id,
+                        "virtual_model": virtual_model,
+                        "attempt": attempts,
+                        "provider_id": candidate.provider_id,
+                        "credential_id": candidate.credential_id,
+                        "model": candidate.concrete_model.model_id,
+                        "error_class": "server",
+                        "action": "next_candidate",
+                    }
+                )
+                selected = None
+                continue
+            except Exception as exc:  # noqa: BLE001
+                # Buffered metadata has not reached the caller. This remains a
+                # pre-commit failure and may fall through to another provider.
+                failure = self._candidate_failure(exc)
+                self.fallback._apply_failure(candidate, failure)  # noqa: SLF001
+                self.store.record_route_event(
+                    {
+                        "request_id": request_id,
+                        "virtual_model": virtual_model,
+                        "attempt": attempts,
+                        "provider_id": candidate.provider_id,
+                        "credential_id": candidate.credential_id,
+                        "model": candidate.concrete_model.model_id,
+                        "error_class": failure.error_class.value,
+                        "action": "next_candidate",
+                    }
+                )
+                selected = None
+                continue
+
             if selected is not None:
                 break
 
         if selected is None:
             raise NoEligibleCandidateError(virtual_model, attempts)
 
-        # post-commit phase: no cross-provider replay is possible from here on
         try:
             async for event in selected:
                 if event.get("data") == "[DONE]":
-                    # stream completed cleanly — record before the terminal marker
-                    # leaves the generator (the SSE layer returns on [DONE], which
-                    # closes this generator early via aclose(), so try/else would
-                    # never fire here).
                     self.store.record_route_event(
-                        {"request_id": request_id, "virtual_model": virtual_model, "attempt": attempts,
-                         "provider_id": selected.candidate.provider_id, "credential_id": selected.candidate.credential_id,
-                         "model": selected.candidate.concrete_model.model_id,
-                         "error_class": None, "action": "success"}
+                        {
+                            "request_id": request_id,
+                            "virtual_model": virtual_model,
+                            "attempt": attempts,
+                            "provider_id": selected.candidate.provider_id,
+                            "credential_id": selected.candidate.credential_id,
+                            "model": selected.candidate.concrete_model.model_id,
+                            "error_class": None,
+                            "action": "success",
+                        }
                     )
                 yield event
         except Exception as exc:  # noqa: BLE001
             failure = self._candidate_failure(exc)
+            action = (
+                "partial_stream_failure"
+                if selected.committed
+                else "next_candidate"
+            )
             log.warning(
-                "PARTIAL_STREAM_FAILURE request=%s provider=%s key=%s model=%s committed=%s error=%s",
-                request_id, selected.candidate.provider_id, selected.candidate.credential_id,
-                selected.candidate.concrete_model.model_id, selected.committed, failure.error_class.value,
+                "stream failure request=%s provider=%s key=%s model=%s "
+                "committed=%s error=%s",
+                request_id,
+                selected.candidate.provider_id,
+                selected.candidate.credential_id,
+                selected.candidate.concrete_model.model_id,
+                selected.committed,
+                failure.error_class.value,
             )
             self.store.record_route_event(
-                {"request_id": request_id, "virtual_model": virtual_model, "attempt": attempts,
-                 "provider_id": selected.candidate.provider_id, "credential_id": selected.candidate.credential_id,
-                 "model": selected.candidate.concrete_model.model_id,
-                 "error_class": failure.error_class.value, "action": "partial_stream_failure"}
+                {
+                    "request_id": request_id,
+                    "virtual_model": virtual_model,
+                    "attempt": attempts,
+                    "provider_id": selected.candidate.provider_id,
+                    "credential_id": selected.candidate.credential_id,
+                    "model": selected.candidate.concrete_model.model_id,
+                    "error_class": failure.error_class.value,
+                    "action": action,
+                }
             )
-            raise PartialStreamFailure(failure.error_class) from exc
+            if selected.committed:
+                raise PartialStreamFailure(failure.error_class) from exc
+            raise NoEligibleCandidateError(
+                virtual_model,
+                attempts,
+                failure.error_class,
+            ) from exc
 
     # --- models / status ---
     def list_virtual_models(self) -> list[dict]:
