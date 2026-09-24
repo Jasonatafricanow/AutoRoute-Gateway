@@ -69,6 +69,28 @@ Executor + Fallback Engine
         +-- failure after response commit ---> PARTIAL_STREAM_FAILURE
 ```
 
+## Bounded completeness
+
+The gateway is intentionally narrow. Its completeness is defined by the routing contract,
+not by reproducing the surrounding features of a model platform.
+
+It owns:
+
+- capability filtering before candidate scoring;
+- provider/credential separation and credential-scoped health state;
+- fallback decisions before response commit;
+- explicit partial-stream failure after response commit;
+- adapter-specific provider error normalization;
+- persisted routing/health state needed by those decisions.
+
+It deliberately leaves model hosting, prompt/application policy, billing, distributed
+scheduling and general agent orchestration outside the gateway. Those omissions reduce
+authority and state surface rather than representing unfinished routing behavior.
+
+The relevant review question is therefore whether the covered routing/failure contracts
+hold under tests and captured provider behavior, not how many providers or abstraction
+layers exist in the repository.
+
 ## Verification
 
 GitHub Actions installs the package with development dependencies and runs `pytest -q` on
