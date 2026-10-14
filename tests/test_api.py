@@ -30,7 +30,7 @@ def _make_service(store=None):
 
 def _client(config, service):
     app = create_app(config, make_test_resolver(), service.store, service=service)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1")
 
 
 def test_acceptance_case1_amd_normal():
@@ -244,3 +244,24 @@ def test_tools_request_routes_to_capable_provider():
     )
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "tool-ok"
+
+
+def test_tokenless_gateway_refuses_browser_forgery():
+    """No token: loopback-only must not be reachable via DNS rebinding or a
+    cross-origin web page."""
+    config, service, _ = _make_service()
+    client = _client(config, service)
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hi"}]}
+    rebind = client.post("/v1/chat/completions", json=body, headers={"Host": "attacker.example:8700"})
+    assert rebind.status_code == 403
+    cross_origin = client.post("/v1/chat/completions", json=body, headers={"Origin": "https://evil.example"})
+    assert cross_origin.status_code == 403
+    assert client.get("/health", headers={"Host": "localhost:8700"}).status_code == 200
+    assert client.get("/health", headers={"Host": "[::1]:8700"}).status_code == 200
+
+
+def test_allow_ips_non_ip_peer_denied_not_500():
+    from gateway.app import _allowed
+
+    assert _allowed("", ["10.0.0.0/8"]) is False
+    assert _allowed("10.1.2.3", ["10.0.0.0/8"]) is True

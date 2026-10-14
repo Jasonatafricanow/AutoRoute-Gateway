@@ -6,6 +6,7 @@ exposure without auth is forbidden — the gateway holds every upstream key.
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 
 from fastapi import FastAPI, Request
@@ -30,7 +31,10 @@ def _is_loopback(ip: str) -> bool:
 def _allowed(client_ip: str, allow_ips: list[str]) -> bool:
     if not allow_ips:
         return _is_loopback(client_ip)
-    addr = ipaddress.ip_address(client_ip)
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:  # unix socket / unknown peer: deny rather than 500
+        return False
     for entry in allow_ips:
         if "/" in entry:
             if addr in ipaddress.ip_network(entry, strict=False):
@@ -38,6 +42,25 @@ def _allowed(client_ip: str, allow_ips: list[str]) -> bool:
         elif ipaddress.ip_address(entry) == addr:
             return True
     return False
+
+
+def _host_is_loopback(host_header: str) -> bool:
+    host = host_header.strip().lower()
+    if host.startswith("["):
+        name = host[1:].partition("]")[0]
+    else:
+        name = host.rpartition(":")[0] if host.count(":") == 1 else host
+    return name == "localhost" or _is_loopback(name)
+
+
+def _browser_forged(request: Request) -> bool:
+    """Without a gateway token, loopback is the only guard — and a browser on
+    this machine is on loopback. A web page can DNS-rebind its own hostname to
+    127.0.0.1 (keeping that hostname in Host) or send cross-origin requests
+    (always carrying Origin); local SDK/CLI clients do neither."""
+    if request.headers.get("origin") is not None:
+        return True
+    return not _host_is_loopback(request.headers.get("host", ""))
 
 
 def create_app(config: GatewayConfig, resolver: SecretResolver, store: StateStore, service: GatewayService | None = None) -> FastAPI:
@@ -51,8 +74,11 @@ def create_app(config: GatewayConfig, resolver: SecretResolver, store: StateStor
         # status endpoints always reachable locally; everything else guarded
         if config.server.auth_token:
             auth = request.headers.get("authorization", "")
-            if auth != f"Bearer {config.server.auth_token}":
+            expected = f"Bearer {config.server.auth_token}"
+            if not hmac.compare_digest(auth.encode("utf-8"), expected.encode("utf-8")):
                 return JSONResponse(status_code=401, content={"error": {"message": "gateway auth required"}})
+        elif _browser_forged(request):
+            return JSONResponse(status_code=403, content={"error": {"message": "cross-origin or non-loopback Host refused; configure a gateway auth token"}})
         if not _allowed(client_ip, config.server.allow_ips):
             return JSONResponse(status_code=403, content={"error": {"message": "network ACL denied"}})
         return await call_next(request)
