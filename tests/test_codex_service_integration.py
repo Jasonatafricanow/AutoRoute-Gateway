@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from pathlib import Path
+
 import pytest
 
 from gateway.config.loader import load_gateway_config
@@ -14,7 +16,7 @@ from gateway.service import GatewayService
 
 @pytest.mark.asyncio
 async def test_chat_uses_executor_for_cli_candidate(monkeypatch, tmp_path):
-    cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg, resolver = load_gateway_config(str(Path(__file__).parent / "fixtures" / "gateway.yaml"))
     cfg = replace(
         cfg,
         codex_enabled=True,
@@ -52,7 +54,7 @@ async def test_chat_uses_executor_for_cli_candidate(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_chat_executor_failure_becomes_adapter_error(monkeypatch):
-    cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg, resolver = load_gateway_config(str(Path(__file__).parent / "fixtures" / "gateway.yaml"))
     cfg = replace(
         cfg,
         codex_enabled=True,
