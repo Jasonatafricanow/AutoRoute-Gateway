@@ -39,3 +39,8 @@ target
 .openclaw/
 .superpowers/
 .mimosa/
+
+# Local deployment policy and machine-specific launchers
+/gateway.yaml
+/restart-model-gateway.bat
+/restart-gateway-launcher.py
