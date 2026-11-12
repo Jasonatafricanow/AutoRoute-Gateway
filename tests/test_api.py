@@ -30,7 +30,7 @@ def _make_service(store=None):
 
 def _client(config, service):
     app = create_app(config, make_test_resolver(), service.store, service=service)
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000))
 
 
 def test_acceptance_case1_amd_normal():
@@ -167,7 +167,7 @@ def test_auth_token_required_when_configured():
     service = GatewayService(config, make_test_resolver(), InMemoryStateStore())
     service._adapters = {"amd": FakeAdapter("amd", script=[completion_body("ok")])}
     app = create_app(config, make_test_resolver(), service.store, service=service)
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000))
     assert client.post("/v1/chat/completions", json={"model": "gateway-fast", "messages": [{"role": "user", "content": "x"}]}).status_code == 401
     ok = client.post(
         "/v1/chat/completions",
@@ -244,3 +244,10 @@ def test_tools_request_routes_to_capable_provider():
     )
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "tool-ok"
+
+
+def test_non_ip_client_identity_is_never_loopback():
+    config, service, _store = _make_service()
+    app = create_app(config, make_test_resolver(), service.store, service=service)
+    client = TestClient(app, client=("testclient", 50000))
+    assert client.get("/status").status_code == 403

@@ -19,8 +19,6 @@ from .state.store import StateStore
 
 
 def _is_loopback(ip: str) -> bool:
-    if ip == "testclient":  # starlette TestClient identity — always local
-        return True
     try:
         return ipaddress.ip_address(ip).is_loopback
     except ValueError:
@@ -30,7 +28,10 @@ def _is_loopback(ip: str) -> bool:
 def _allowed(client_ip: str, allow_ips: list[str]) -> bool:
     if not allow_ips:
         return _is_loopback(client_ip)
-    addr = ipaddress.ip_address(client_ip)
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
     for entry in allow_ips:
         if "/" in entry:
             if addr in ipaddress.ip_network(entry, strict=False):
