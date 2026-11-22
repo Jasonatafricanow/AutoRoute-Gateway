@@ -37,6 +37,19 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
+def _scope_key(value: str | None) -> str:
+    """Encode an optional scope component into a non-NULL SQLite key."""
+    return value or ""
+
+
+def _public_scope_row(row: sqlite3.Row, *nullable_fields: str) -> dict:
+    data = dict(row)
+    for field in nullable_fields:
+        if data.get(field) == "":
+            data[field] = None
+    return data
+
+
 class SqliteStateStore:
     def __init__(self, path: str | Path):
         self._path = str(path)
@@ -51,7 +64,7 @@ class SqliteStateStore:
                 """
                 CREATE TABLE IF NOT EXISTS provider_health (
                     provider_id TEXT NOT NULL,
-                    model TEXT,
+                    model TEXT NOT NULL DEFAULT '',
                     state TEXT NOT NULL,
                     reason TEXT NOT NULL DEFAULT '',
                     cooldown_until TEXT,
@@ -68,8 +81,8 @@ class SqliteStateStore:
                 );
                 CREATE TABLE IF NOT EXISTS quota_state (
                     provider_id TEXT NOT NULL,
-                    credential_id TEXT,
-                    model TEXT,
+                    credential_id TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL DEFAULT '',
                     state TEXT NOT NULL,
                     reason TEXT NOT NULL DEFAULT '',
                     observed_at TEXT NOT NULL,
@@ -104,16 +117,57 @@ class SqliteStateStore:
                 """
             )
 
+            # Older schemas allowed NULL inside composite primary keys. SQLite
+            # treats NULL values as distinct there, so provider-level upserts
+            # could silently accumulate multiple rows. Keep the newest legacy
+            # row per normalized scope, then move all optional scope keys to
+            # the explicit empty-string sentinel used by current writes.
+            self._conn.executescript(
+                """
+                DELETE FROM provider_health
+                WHERE rowid NOT IN (
+                    SELECT MAX(rowid)
+                    FROM provider_health
+                    GROUP BY provider_id, COALESCE(model, '')
+                );
+                UPDATE provider_health SET model = '' WHERE model IS NULL;
+
+                DELETE FROM quota_state
+                WHERE rowid NOT IN (
+                    SELECT MAX(rowid)
+                    FROM quota_state
+                    GROUP BY
+                        provider_id,
+                        COALESCE(credential_id, ''),
+                        COALESCE(model, '')
+                );
+                UPDATE quota_state
+                SET credential_id = COALESCE(credential_id, ''),
+                    model = COALESCE(model, '');
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    ux_provider_health_normalized_scope
+                    ON provider_health(provider_id, COALESCE(model, ''));
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    ux_quota_normalized_scope
+                    ON quota_state(
+                        provider_id,
+                        COALESCE(credential_id, ''),
+                        COALESCE(model, '')
+                    );
+                """
+            )
+
     # --- health ---
     def get_health(self, subject: StateSubject) -> HealthState:
         with self._lock:
             row = self._conn.execute(
-                "SELECT state FROM provider_health WHERE provider_id=? AND model IS ?",
-                (subject.provider_id, subject.concrete_model),
+                "SELECT state FROM provider_health WHERE provider_id=? AND model=?",
+                (subject.provider_id, _scope_key(subject.concrete_model)),
             ).fetchone()
             if row is None and subject.concrete_model is not None:
                 row = self._conn.execute(
-                    "SELECT state FROM provider_health WHERE provider_id=? AND model IS NULL",
+                    "SELECT state FROM provider_health WHERE provider_id=? AND model=''",
                     (subject.provider_id,),
                 ).fetchone()
         return HealthState(row["state"]) if row else HealthState.UNKNOWN
@@ -130,7 +184,7 @@ class SqliteStateStore:
                 """,
                 (
                     subject.provider_id,
-                    subject.concrete_model,
+                    _scope_key(subject.concrete_model),
                     state.value,
                     reason,
                     cooldown_until.isoformat() if cooldown_until else None,
@@ -142,17 +196,21 @@ class SqliteStateStore:
     def get_quota(self, subject: StateSubject) -> QuotaState:
         with self._lock:
             row = self._conn.execute(
-                "SELECT state FROM quota_state WHERE provider_id=? AND credential_id IS ? AND model IS ?",
-                (subject.provider_id, subject.credential_id, subject.concrete_model),
+                "SELECT state FROM quota_state WHERE provider_id=? AND credential_id=? AND model=?",
+                (
+                    subject.provider_id,
+                    _scope_key(subject.credential_id),
+                    _scope_key(subject.concrete_model),
+                ),
             ).fetchone()
             if row is None and (subject.credential_id is not None or subject.concrete_model is not None):
                 row = self._conn.execute(
-                    "SELECT state FROM quota_state WHERE provider_id=? AND credential_id IS ? AND model IS NULL",
-                    (subject.provider_id, subject.credential_id),
+                    "SELECT state FROM quota_state WHERE provider_id=? AND credential_id=? AND model=''",
+                    (subject.provider_id, _scope_key(subject.credential_id)),
                 ).fetchone()
             if row is None and subject.credential_id is not None:
                 row = self._conn.execute(
-                    "SELECT state FROM quota_state WHERE provider_id=? AND credential_id IS NULL AND model IS NULL",
+                    "SELECT state FROM quota_state WHERE provider_id=? AND credential_id='' AND model=''",
                     (subject.provider_id,),
                 ).fetchone()
         return QuotaState(row["state"]) if row else QuotaState.UNKNOWN
@@ -170,8 +228,8 @@ class SqliteStateStore:
                 """,
                 (
                     subject.provider_id,
-                    subject.credential_id,
-                    subject.concrete_model,
+                    _scope_key(subject.credential_id),
+                    _scope_key(subject.concrete_model),
                     state.value,
                     reason,
                     _now(),
@@ -205,26 +263,30 @@ class SqliteStateStore:
     def get_cooldown(self, subject: StateSubject) -> datetime | None:
         with self._lock:
             h = self._conn.execute(
-                "SELECT cooldown_until FROM provider_health WHERE provider_id=? AND model IS ?",
-                (subject.provider_id, subject.concrete_model),
+                "SELECT cooldown_until FROM provider_health WHERE provider_id=? AND model=?",
+                (subject.provider_id, _scope_key(subject.concrete_model)),
             ).fetchone()
             if h is None and subject.concrete_model is not None:
                 h = self._conn.execute(
-                    "SELECT cooldown_until FROM provider_health WHERE provider_id=? AND model IS NULL",
+                    "SELECT cooldown_until FROM provider_health WHERE provider_id=? AND model=''",
                     (subject.provider_id,),
                 ).fetchone()
             q = self._conn.execute(
-                "SELECT cooldown_until FROM quota_state WHERE provider_id=? AND credential_id IS ? AND model IS ?",
-                (subject.provider_id, subject.credential_id, subject.concrete_model),
+                "SELECT cooldown_until FROM quota_state WHERE provider_id=? AND credential_id=? AND model=?",
+                (
+                    subject.provider_id,
+                    _scope_key(subject.credential_id),
+                    _scope_key(subject.concrete_model),
+                ),
             ).fetchone()
             if q is None and (subject.credential_id is not None or subject.concrete_model is not None):
                 q = self._conn.execute(
-                    "SELECT cooldown_until FROM quota_state WHERE provider_id=? AND credential_id IS ? AND model IS NULL",
-                    (subject.provider_id, subject.credential_id),
+                    "SELECT cooldown_until FROM quota_state WHERE provider_id=? AND credential_id=? AND model=''",
+                    (subject.provider_id, _scope_key(subject.credential_id)),
                 ).fetchone()
             if q is None and subject.credential_id is not None:
                 q = self._conn.execute(
-                    "SELECT cooldown_until FROM quota_state WHERE provider_id=? AND credential_id IS NULL AND model IS NULL",
+                    "SELECT cooldown_until FROM quota_state WHERE provider_id=? AND credential_id='' AND model=''",
                     (subject.provider_id,),
                 ).fetchone()
         times = [t for row in (h, q) if row for t in [_parse_dt(row["cooldown_until"])] if t]
@@ -270,8 +332,18 @@ class SqliteStateStore:
     # --- status endpoints ---
     def snapshot(self) -> dict:
         with self._lock:
-            health = [dict(r) for r in self._conn.execute("SELECT * FROM provider_health ORDER BY provider_id, model").fetchall()]
-            quota = [dict(r) for r in self._conn.execute("SELECT * FROM quota_state ORDER BY provider_id, credential_id, model").fetchall()]
+            health = [
+                _public_scope_row(r, "model")
+                for r in self._conn.execute(
+                    "SELECT * FROM provider_health ORDER BY provider_id, model"
+                ).fetchall()
+            ]
+            quota = [
+                _public_scope_row(r, "credential_id", "model")
+                for r in self._conn.execute(
+                    "SELECT * FROM quota_state ORDER BY provider_id, credential_id, model"
+                ).fetchall()
+            ]
             credential = [dict(r) for r in self._conn.execute("SELECT * FROM credential_state ORDER BY provider_id, credential_id").fetchall()]
         return {"health": health, "quota": quota, "credential": credential}
 

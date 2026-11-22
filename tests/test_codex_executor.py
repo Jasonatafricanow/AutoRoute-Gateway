@@ -185,3 +185,39 @@ def test_chat_response_from_executor():
     assert body["usage"]["total_tokens"] == 4
     assert body["x_executor"] == "codex-cli"
     assert body["model"] == "gateway-fast"
+
+def test_execute_uses_isolated_cwd_and_sanitized_environment(monkeypatch):
+    events = [
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "ok"},
+        }
+    ]
+    raw = "\n".join(json.dumps(e) for e in events) + "\n"
+    monkeypatch.setenv("AMD_API_KEY", "must-not-leak")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "must-not-leak")
+
+    captured = {}
+
+    async def run():
+        with patch(
+            "gateway.executors.codex.asyncio.create_subprocess_exec",
+            new=AsyncMock(),
+        ) as mocked:
+            proc = AsyncMock()
+            proc.communicate.return_value = (raw.encode(), b"")
+            proc.returncode = 0
+            mocked.return_value = proc
+            result = await CodexExecutor(enabled=True).execute(
+                {"messages": [{"role": "user", "content": "hello"}]}
+            )
+            captured.update(mocked.call_args.kwargs)
+            return result
+
+    result = asyncio.run(run())
+    assert result["ok"] is True
+    assert captured["cwd"]
+    assert captured["env"]["HOME"] == captured["cwd"]
+    assert captured["env"]["USERPROFILE"] == captured["cwd"]
+    assert "AMD_API_KEY" not in captured["env"]
+    assert "DEEPSEEK_API_KEY" not in captured["env"]

@@ -21,7 +21,9 @@ import asyncio
 import os
 import json
 import logging
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from ..domain.capability import Capability, CapabilitySet
@@ -33,6 +35,42 @@ CODEX_BIN = "codex"
 EXEC_TIMEOUT_SECONDS = 180.0
 #: 固定指令（经 cmd /c 拼接，必须是常量——用户内容一律走 stdin，防注入）
 EXEC_PROMPT_ARG = "Answer the user request below. Output the final answer only."
+
+
+def _isolated_executor_env(workspace: str) -> dict[str, str]:
+    """Build a minimal environment for the host CLI executor.
+
+    Provider/API secrets from the gateway process are intentionally not
+    inherited. A separate Codex home may be supplied explicitly when the CLI
+    needs subscription credentials/configuration.
+    """
+    keep = (
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "LANG",
+        "LC_ALL",
+    )
+    env = {key: os.environ[key] for key in keep if os.environ.get(key)}
+
+    home = os.environ.get("AUTOROUTE_CODEX_HOME", "").strip()
+    if home:
+        home_path = Path(home).expanduser().resolve()
+        if not home_path.is_dir():
+            raise AdapterError(
+                f"AUTOROUTE_CODEX_HOME is not a directory: {home_path}"
+            )
+        isolated_home = str(home_path)
+    else:
+        isolated_home = workspace
+
+    env["HOME"] = isolated_home
+    env["USERPROFILE"] = isolated_home
+    env["TMP"] = workspace
+    env["TEMP"] = workspace
+    return env
 
 
 def prompt_from_task(task: dict) -> str:
@@ -126,15 +164,21 @@ class CodexExecutor(ExecutorAdapter):
             cmd = ["cmd.exe", "/c", *cmd]
         started = time.perf_counter()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")), timeout=EXEC_TIMEOUT_SECONDS
-            )
+            with tempfile.TemporaryDirectory(
+                prefix="autoroute-codex-"
+            ) as workspace:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workspace,
+                    env=_isolated_executor_env(workspace),
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(prompt.encode("utf-8")),
+                    timeout=EXEC_TIMEOUT_SECONDS,
+                )
         except asyncio.TimeoutError:
             return {
                 "ok": False,
