@@ -61,7 +61,7 @@ def test_response_schema_shape_only():
 def _client(dir_path):
     recorder = CaptureRecorder(dir_path / "capture.jsonl")
     app = create_capture_app(recorder, upstream=None)
-    return TestClient(app), recorder
+    return TestClient(app, client=("127.0.0.1", 50000)), recorder
 
 
 def test_capture_app_records_request_and_synthetic_response():

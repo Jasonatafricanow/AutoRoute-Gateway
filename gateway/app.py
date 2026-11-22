@@ -20,8 +20,6 @@ from .state.store import StateStore
 
 
 def _is_loopback(ip: str) -> bool:
-    if ip == "testclient":  # starlette TestClient identity — always local
-        return True
     try:
         return ipaddress.ip_address(ip).is_loopback
     except ValueError:
