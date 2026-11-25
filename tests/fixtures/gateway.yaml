@@ -1,0 +1,151 @@
+# Synthetic routing fixture; adapters are mocked in tests.
+server:
+  bind: 127.0.0.1
+  port: 8700
+  database_path: ':memory:'
+log_dir: logs
+routes:
+  gateway-fast:
+    description: 成本优先、速度优先，免费资源优先但服务连续性优先于成本
+    providers:
+    - provider: amd
+      model: DeepSeek-V4-Flash
+    - provider: modelscope
+      model: deepseek-ai/DeepSeek-V4-Flash-0731
+    - provider: opencode
+      model: deepseek-v4-flash
+    - provider: deepseek
+      model: deepseek-v4-flash
+  gateway-deep:
+    description: 更强推理
+    providers:
+    - provider: opencode
+      model: deepseek-v4-pro
+providers:
+  amd:
+    type: openai_compatible
+    base_url: https://amd.example.invalid/v1
+    models:
+    - id: DeepSeek-V4-Flash
+      default: true
+      capabilities:
+      - text
+      - stream
+      - usage
+      - multi_turn
+    keys:
+    - id: amd-01
+      env: TEST_AMD_0
+      priority: 100
+  modelscope:
+    type: openai_compatible
+    base_url: https://modelscope.example.invalid/v1
+    models:
+    - id: deepseek-ai/DeepSeek-V4-Flash-0731
+      default: true
+      capabilities:
+      - text
+      - stream
+      - usage
+      - multi_turn
+    keys:
+    - id: ms-01
+      env: TEST_MODELSCOPE_0
+      priority: 100
+  opencode:
+    type: openai_compatible
+    base_url: https://opencode.example.invalid/v1
+    models:
+    - id: deepseek-v4-flash
+      default: true
+      capabilities:
+      - text
+      - stream
+      - usage
+      - multi_turn
+    - id: deepseek-v4-pro
+      capabilities:
+      - text
+      - stream
+      - tools
+      - structured_output
+      - usage
+      - multi_turn
+    keys:
+    - id: ocg-01
+      env: TEST_OPENCODE_0
+      priority: 100
+    - id: ocg-02
+      env: TEST_OPENCODE_1
+      priority: 50
+      reserve: true
+    reset_policy:
+      type: unknown
+  gemini:
+    type: gemini
+    enabled: false
+    base_url: https://gemini.example.invalid/v1
+    key_pool_strategy: round_robin
+    models:
+    - id: gemini-2.0-flash
+      default: true
+      capabilities:
+      - text
+      - stream
+      - usage
+    keys:
+    - id: gemini-01
+      env: TEST_GEMINI_0
+      priority: 100
+    - id: gemini-02
+      env: TEST_GEMINI_1
+      priority: 90
+    - id: gemini-03
+      env: TEST_GEMINI_2
+      priority: 80
+    - id: gemini-04
+      env: TEST_GEMINI_3
+      priority: 70
+    - id: gemini-05
+      env: TEST_GEMINI_4
+      priority: 60
+      reserve: true
+  deepseek:
+    type: openai_compatible
+    base_url: https://deepseek.example.invalid/v1
+    models:
+    - id: deepseek-v4-flash
+      default: true
+      capabilities:
+      - text
+      - stream
+      - tools
+      - structured_output
+      - usage
+      - multi_turn
+    - id: deepseek-v4-pro
+      capabilities:
+      - text
+      - stream
+      - tools
+      - structured_output
+      - usage
+      - multi_turn
+    keys:
+    - id: ds-01
+      env: TEST_DEEPSEEK_0
+      priority: 100
+  codex:
+    type: executor
+    enabled: false
+    models:
+    - id: codex-gpt
+      default: true
+      capabilities:
+      - text
+      - structured_output
+      - multi_turn
+      - usage
+    base_url: https://codex.example.invalid/v1
+codex:
+  enabled: false

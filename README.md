@@ -1,162 +1,34 @@
-# AutoRoute-Gateway (v0.3.1)
+# AutoRoute-Gateway
 
-AutoRoute-Gateway is a capability-aware LLM gateway for routing requests across multiple
-providers and credentials while preserving explicit failure and response-commit semantics.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-The project is primarily about **routing correctness under partial failure**, not about
-claiming that one scoring formula can always choose the objectively best model.
+An LLM gateway that tries compatible provider credentials in configured order and handles failure before and after streaming output begins.
 
-## Core boundaries
+## Routing behavior
 
-```text
-request
-  -> virtual model / capability requirements
-  -> compatible provider+credential candidates
-  -> candidate scoring
-  -> executor / fallback
-  -> response commit boundary
-```
+- Capability checks exclude candidates that cannot serve a request.
+- Eligible candidates retain configuration order. Scores are diagnostic; they do not provide adaptive latency, price or success-rate ranking.
+- Credential health can exclude a key without disabling its whole provider.
+- Failure before substantive output may fall back. After output is committed, a failure is surfaced instead of mixing two providers' responses.
 
-Three distinctions drive the design:
-
-1. **Provider != Credential**  
-   Health/quota/auth state is tracked at credential scope where appropriate. One exhausted
-   or invalid key should not automatically disable every credential for the provider.
-
-2. **Capability before scoring**  
-   Streaming, tools, vision and context requirements filter incompatible candidates before
-   preference/scoring logic is applied.
-
-3. **Pre-commit failure != post-commit failure**  
-   Before substantive output is committed to the client, fallback can remain legal. After
-   response content is committed, silently switching providers risks constructing a mixed
-   response that no upstream produced, so the gateway surfaces a partial-stream failure.
-
-## Audit corrections
-
-A later review found several correctness problems in the first public release. The repair
-commit `fix: close SQLite, stream fallback, and Codex executor P1s (#2)` records the
-current corrections:
-
-- nullable SQLite scope keys are normalized consistently;
-- role-only/non-substantive stream events do not prematurely close the fallback window;
-- the optional Codex CLI executor runs with isolated cwd and sanitized inherited environment;
-- Codex CLI fallback is **disabled by default** and removed from the default route;
-- regressions cover the corrected SQLite, stream and executor boundaries.
-
-The CLI executor remains an explicit opt-in adapter, not a guaranteed last-resort production
-path.
-
-Before enabling it, note that `--sandbox read-only` still lets the CLI **read** any file the
-gateway's OS user can read, including the `.env` holding upstream keys and the Codex home.
-A gateway client can steer that through the prompt, so run the executor under a separate OS
-user or container that cannot see the gateway directory.
-
-Without `server.auth.token`, the gateway serves loopback peers only and additionally refuses
-requests carrying `Origin` or a non-loopback `Host`, so a web page in a local browser cannot
-reach it via cross-origin requests or DNS rebinding. Behind a same-host reverse proxy every
-peer looks like loopback: configure a token in that case.
-
-## Request flow
-
-```text
-OpenAI-compatible request
-        |
-        v
-Virtual Model Resolver
-        |
-        v
-Capability Gate
-        |
-        v
-Candidate Builder / Scorer
-        |
-        v
-Executor + Fallback Engine
-        |
-        +-- failure before response commit --> next legal candidate
-        |
-        +-- failure after response commit ---> PARTIAL_STREAM_FAILURE
-```
-
-## Bounded completeness
-
-The gateway is intentionally narrow. Its completeness is defined by the routing contract,
-not by reproducing the surrounding features of a model platform.
-
-It owns:
-
-- capability filtering before candidate scoring;
-- provider/credential separation and credential-scoped health state;
-- fallback decisions before response commit;
-- explicit partial-stream failure after response commit;
-- adapter-specific provider error normalization;
-- persisted routing/health state needed by those decisions.
-
-It deliberately leaves model hosting, prompt/application policy, billing, distributed
-scheduling and general agent orchestration outside the gateway. Those omissions reduce
-authority and state surface rather than representing unfinished routing behavior.
-
-The relevant review question is therefore whether the covered routing/failure contracts
-hold under tests and captured provider behavior, not how many providers or abstraction
-layers exist in the repository.
-
-## Verification
-
-GitHub Actions installs the package with development dependencies and runs `pytest -q` on
-pushes and pull requests.
-
-```bash
-python -m pip install -e ".[dev]"
-python -m pytest -q
-```
-
-The repository also contains:
-
-- `docs/SPEC.md` — routing/domain contract;
-- `docs/REAL_TRANSPORT_CONTRACT.md` — captured transport assumptions;
-- `docs/PROVIDER_CAPABILITY_CONFORMANCE_MATRIX.yaml` — capability records;
-- `tools/smoke_test.py` and `tools/capture_proxy.py` — verification utilities.
-
-## Run
+## Run and verify
 
 ```powershell
+python -m pip install -e ".[dev]"
 Copy-Item examples\gateway.yaml.example gateway.yaml
 Copy-Item examples\.env.example .env
 python -m tools.run_gateway --config gateway.yaml --env .env
+python -m pytest -q
 ```
 
-Default service binding is loopback.
+`gateway.yaml` and `.env` are local deployment configuration. Use the example template for a new installation. Configure an authentication token behind a reverse proxy. The optional Codex CLI executor is disabled by default; if enabled, isolate its OS user/container from gateway secrets and private files.
 
-Main endpoints:
+## Inspect the implementation
 
-- `POST /v1/chat/completions`
-- `GET /v1/models`
-- `GET /health`
-- `GET /ready`
-- `GET /providers`
-- `GET /routes`
+[Routing and verification guide](docs/IMPLEMENTATION.md) · [hardening history](docs/AUDIT-HISTORY.md) · [transport contract](docs/REAL_TRANSPORT_CONTRACT.md)
 
-## Scope / non-claims
+Endpoints include `/v1/chat/completions`, `/v1/models`, `/health`, `/ready`, `/providers` and `/routes`. OpenAI-compatible and Gemini adapters are present. Adaptive ranking, Anthropic-native Messages, route explanations and a metrics endpoint remain future work.
 
-This repository demonstrates routing, credential isolation, fallback and streaming commit
-semantics under the covered adapters/tests. It does not claim:
-
-- that its scorer is universally optimal across workloads;
-- provider-independent behavior that has not been captured/verified for a provider;
-- zero-downtime distributed gateway operation;
-- that the optional CLI executor should be enabled in a default production route.
-
-## Layout
-
-```text
-gateway/     routing/domain/provider/executor/state/API code
-tests/       routing, fallback and regression tests
-docs/        contracts and capability records
-examples/    configuration templates
-tools/       runner, smoke and capture utilities
-```
-
-Python 3.11+ · FastAPI · httpx · SQLite-backed state · pytest
+## License
 
 MIT — see [LICENSE](LICENSE).

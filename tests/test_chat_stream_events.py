@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gateway.config.loader import load_gateway_config
@@ -29,7 +31,7 @@ class FakeSecretResolver:
 
 @pytest.mark.asyncio
 async def test_chat_stream_records_success(monkeypatch):
-    cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg, resolver = load_gateway_config(str(Path(__file__).parent / "fixtures" / "gateway.yaml"))
     cfg.routes["gateway-fast"] = _route(
         "gateway-fast", {"providers": [{"provider": "amd", "model": "DeepSeek-V4-Flash"}]}
     )
@@ -48,7 +50,7 @@ async def test_chat_stream_records_success(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chat_stream_records_partial_on_mid_stream_error(monkeypatch):
-    cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg, resolver = load_gateway_config(str(Path(__file__).parent / "fixtures" / "gateway.yaml"))
     cfg.routes["gateway-fast"] = _route(
         "gateway-fast", {"providers": [{"provider": "amd", "model": "DeepSeek-V4-Flash"}]}
     )
@@ -72,7 +74,7 @@ async def test_chat_stream_records_partial_on_mid_stream_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_role_only_prefix_failure_falls_back_before_commit(monkeypatch):
-    cfg, resolver = load_gateway_config("gateway.yaml")
+    cfg, resolver = load_gateway_config(str(Path(__file__).parent / "fixtures" / "gateway.yaml"))
     cfg.routes["gateway-fast"] = _route(
         "gateway-fast",
         {
